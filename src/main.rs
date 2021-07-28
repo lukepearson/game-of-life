@@ -1,13 +1,15 @@
 extern crate find_folder;
 extern crate piston_window;
 
+use std::fmt::format;
+
 use piston_window::*;
 
 const WIDTH: usize = 160;
 const HEIGHT: usize = 160;
 
 fn main() {
-    let help_text = ["\"Space\" to pause", "\"Esc\" to quit", "\"r\" to reset"];
+    let help_text = ["\"Space\" to pause", "\"Esc\" to quit", "\"r\" to reset", "\"-\" to reduce speed", "\"+\" to increase speed"];
     let mut fps = 10;
 
     let opengl = OpenGL::V3_2;
@@ -51,7 +53,7 @@ fn main() {
             if key == Key::Space {
                 paused = !paused;
             }
-            if key == Key::Plus {
+            if key == Key::Plus || key == Key::Equals {
                 fps += 1;
                 if fps > 60 {
                     fps = 60;
@@ -77,9 +79,10 @@ fn main() {
             clear([0.0; 4], g);
 
             let frame_text_trans = c.transform.trans(5.0, 10.0);
+            let fps_text = format!("{} fps ({})", fps, frame);
             text::Text::new_color([0.8, 0.8, 0.8, 1.0], 10)
                 .draw(
-                    &frame.to_string(),
+                    &fps_text.to_string(),
                     &mut glyphs,
                     &c.draw_state,
                     frame_text_trans,
