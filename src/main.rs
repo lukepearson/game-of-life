@@ -51,6 +51,7 @@ fn main() {
         if let Some(Button::Keyboard(key)) = e.press_args() {
             if key == Key::R {
                 cells = generate_random();
+                new_cells = cells.clone();
                 frame = 0;
             }
             if key == Key::Space {
