@@ -1,7 +1,10 @@
 extern crate find_folder;
+extern crate fps_counter;
 extern crate piston_window;
 
+use fps_counter::*;
 use piston_window::*;
+use rand::Rng;
 
 const WIDTH: usize = 160;
 const HEIGHT: usize = 160;
@@ -9,15 +12,44 @@ const SIZE: usize = 5;
 const WW: usize = WIDTH - 1;
 const HH: usize = HEIGHT - 1;
 
+struct Settings {
+    density: u64,
+    fps: u64,
+}
+
+impl Settings {
+    const MAX_FPS: u64 = 60;
+    const MIN_FPS: u64 = 1;
+    pub fn new(density: u64, fps: u64) -> Self {
+        Settings { density, fps }
+    }
+    pub fn increase_fps(&mut self) {
+        self.fps = if self.fps >= Settings::MAX_FPS {
+            Settings::MAX_FPS
+        } else {
+            self.fps + 1
+        };
+    }
+    pub fn decrease_fps(&mut self) {
+        self.fps = if self.fps <= Settings::MIN_FPS {
+            Settings::MIN_FPS
+        } else {
+            self.fps - 1
+        };
+    }
+}
+
 fn main() {
     let help_text = [
         "\"Space\" to pause",
         "\"Esc\" or \"q\" to quit",
         "\"r\" to reset",
+        "\"c\" to clear",
         "\"-\" to reduce speed",
         "\"+\" to increase speed",
+        "Click on a square to toggle it",
     ];
-    let mut fps = 10;
+    let mut settings: Settings = Settings::new(50, 10);
 
     let opengl = OpenGL::V3_2;
     let mut window: PistonWindow = WindowSettings::new("qr", [800; 2])
@@ -29,28 +61,46 @@ fn main() {
     let assets = find_folder::Search::ParentsThenKids(3, 3)
         .for_folder("assets")
         .unwrap();
-    println!("{:?}", assets);
     let mut glyphs = window
         .load_font(assets.join("FiraSans-Regular.ttf"))
         .unwrap();
 
     let mut events = Events::new(EventSettings::new());
-    events.set_max_fps(fps);
+    events.set_max_fps(settings.fps);
 
-    let mut cells = generate_random();
-    let mut prev: [[bool; WIDTH]; HEIGHT] = [[true; WIDTH]; HEIGHT];
-
+    let mut cells = generate_random(settings.density);
     let mut new_cells = cells.clone();
     let rect = math::margin_rectangle([0.0, 0.0, SIZE as f64, SIZE as f64], 1.0);
     let red = [1.0, 0.0, 0.0, 0.4];
     let mut paused = false;
     let mut frame = 0;
+    let mut fps_counter = FPSCounter::default();
     let mut show_text = true;
+    let mut is_mouse_down = false;
 
     while let Some(e) = events.next(&mut window) {
+        if let Some(args) = e.button_args() {
+            if args.state == ButtonState::Press {
+                println!("Button pressed");
+                is_mouse_down = true;
+            } else if args.state == ButtonState::Release {
+                println!("Button released");
+                is_mouse_down = false;
+            }
+        }
+
+        if let Some(xy) = e.mouse_cursor_args() {
+            let cx = (xy[0] / SIZE as f64).floor();
+            let cy = (xy[1] / SIZE as f64).floor();
+            println!("coords {}, {} | cell {}, {}", xy[0], xy[1], cx, cy);
+            if is_mouse_down && cx < WIDTH as f64 && cy < HEIGHT as f64 {
+                cells[cy as usize][cx as usize] = true;
+            }
+        }
+
         if let Some(Button::Keyboard(key)) = e.press_args() {
             if key == Key::R {
-                cells = generate_random();
+                cells = generate_random(settings.density);
                 new_cells = cells.clone();
                 frame = 0;
             }
@@ -60,13 +110,16 @@ fn main() {
             if key == Key::Q {
                 return;
             }
+            if key == Key::C {
+                cells = [[false; WIDTH]; HEIGHT];
+            }
             if key == Key::Plus || key == Key::Equals {
-                fps = if fps >= 60 { 60 } else { fps + 1 };
-                events.set_max_fps(fps);
+                settings.increase_fps();
+                events.set_max_fps(settings.fps);
             }
             if key == Key::Minus {
-                fps = if fps <= 1 { 1 } else { fps - 1 };
-                events.set_max_fps(fps);
+                settings.decrease_fps();
+                events.set_max_fps(settings.fps);
             }
         }
 
@@ -74,7 +127,11 @@ fn main() {
             clear([0.0; 4], g);
 
             let frame_text_trans = c.transform.trans(5.0, 10.0);
-            let fps_text = format!("{} fps ({})", fps, frame);
+            let fps: usize = fps_counter.tick();
+            let fps_text = format!(
+                "target_fps {} | actual_fps {} | frame {}",
+                settings.fps, fps, frame
+            );
             text::Text::new_color([0.8, 0.8, 0.8, 1.0], 10)
                 .draw(
                     &fps_text.to_string(),
@@ -109,18 +166,13 @@ fn main() {
                         rectangle(red, rect, c.transform, g);
                     }
 
-                    new_cells[h][w] = determine_fate(cells, w, h);
+                    new_cells[h][w] = determine_next_state(cells, w, h);
                 }
             }
 
             glyphs.factory.encoder.flush(device);
 
-            if prev == new_cells {
-                println!("Ended after {} frames", frame);
-                frame = 0;
-            }
             if !paused {
-                prev = cells.clone();
                 cells = new_cells.clone();
                 frame += 1;
             }
@@ -128,17 +180,22 @@ fn main() {
     }
 }
 
-fn generate_random() -> [[bool; WIDTH]; HEIGHT] {
+fn generate_random(density: u64) -> [[bool; WIDTH]; HEIGHT] {
     let mut cells: [[bool; WIDTH]; HEIGHT] = [[true; WIDTH]; HEIGHT];
     for i in 0..HEIGHT {
         for j in 0..WIDTH {
-            cells[i][j] = rand::random::<bool>();
+            let num = rand::thread_rng().gen_range(0..100);
+            if num <= density {
+                cells[i][j] = true
+            } else {
+                cells[i][j] = false
+            }
         }
     }
     return cells;
 }
 
-fn determine_fate(cells: [[bool; WIDTH]; HEIGHT], w: usize, h: usize) -> bool {
+fn determine_next_state(cells: [[bool; WIDTH]; HEIGHT], w: usize, h: usize) -> bool {
     let up = if h > 0 { cells[h - 1][w] } else { cells[HH][w] };
     let right = if w < WW { cells[h][w + 1] } else { cells[h][0] };
     let left = if w > 0 { cells[h][w - 1] } else { cells[h][WW] };

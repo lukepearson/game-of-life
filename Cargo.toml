@@ -8,4 +8,6 @@ edition = "2018"
 piston_window = "*"
 find_folder = "0.3.0"
 rand = "0.8.0"
-
+rand_distr = "0.4.1"
+conrod_core = "0.74.0"
+fps_counter = "2.0.0"
