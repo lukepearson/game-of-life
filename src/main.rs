@@ -1,5 +1,6 @@
 extern crate find_folder;
 extern crate fps_counter;
+extern crate image as im;
 extern crate piston_window;
 
 use fps_counter::*;
@@ -49,7 +50,7 @@ fn main() {
         "\"+\" to increase speed",
         "Click on a square to toggle it",
     ];
-    let mut settings: Settings = Settings::new(50, 10);
+    let mut settings: Settings = Settings::new(50, 20);
 
     let opengl = OpenGL::V3_2;
     let mut window: PistonWindow = WindowSettings::new("qr", [800; 2])
@@ -70,13 +71,22 @@ fn main() {
 
     let mut cells = generate_random(settings.density);
     let mut new_cells = cells.clone();
-    let rect = math::margin_rectangle([0.0, 0.0, SIZE as f64, SIZE as f64], 1.0);
-    let red = [1.0, 0.0, 0.0, 0.4];
+    let red = im::Rgba([255, 0, 0, 150]);
+    let mut darkness =
+        im::ImageBuffer::new(WIDTH as u32 * SIZE as u32, HEIGHT as u32 * SIZE as u32);
+    darkness.fill(0);
     let mut paused = false;
     let mut frame = 0;
     let mut fps_counter = FPSCounter::default();
     let mut show_text = true;
     let mut is_mouse_down = false;
+    let mut canvas = im::ImageBuffer::new(WIDTH as u32 * SIZE as u32, HEIGHT as u32 * SIZE as u32);
+    let mut texture_context = TextureContext {
+        factory: window.factory.clone(),
+        encoder: window.factory.create_command_buffer().into(),
+    };
+    let mut texture: G2dTexture =
+        Texture::from_image(&mut texture_context, &canvas, &TextureSettings::new()).unwrap();
 
     while let Some(e) = events.next(&mut window) {
         if let Some(args) = e.button_args() {
@@ -125,6 +135,7 @@ fn main() {
 
         window.draw_2d(&e, |c, g, device| {
             clear([0.0; 4], g);
+            canvas.clone_from(&darkness);
 
             let frame_text_trans = c.transform.trans(5.0, 10.0);
             let fps: usize = fps_counter.tick();
@@ -154,29 +165,39 @@ fn main() {
                         .unwrap();
                     text_index += 1.0;
                 }
-                if frame > 100 {
+                if frame > 500 {
                     show_text = false;
                 }
             }
 
             for h in 0..HEIGHT {
                 for w in 0..WIDTH {
-                    let c = c.trans(w as f64 * SIZE as f64, h as f64 * SIZE as f64);
-                    if cells[h][w] == true {
-                        rectangle(red, rect, c.transform, g);
+                    if cells[h][w] {
+                        let x = w as u32 * SIZE as u32;
+                        let y = h as u32 * SIZE as u32;
+                        for cell_x in 1..SIZE - 1 {
+                            for cell_y in 1..SIZE - 1 {
+                                let xx = x + cell_x as u32 + 1;
+                                let yy = y + cell_y as u32 + 1;
+                                canvas.put_pixel(xx, yy, red);
+                            }
+                        }
                     }
 
                     new_cells[h][w] = determine_next_state(cells, w, h);
                 }
             }
 
+            image(&texture, c.transform, g);
+            texture.update(&mut texture_context, &canvas).unwrap();
+            texture_context.encoder.flush(device);
             glyphs.factory.encoder.flush(device);
-
-            if !paused {
-                cells = new_cells.clone();
-                frame += 1;
-            }
         });
+
+        if !paused {
+            cells = new_cells.clone();
+            frame += 1;
+        }
     }
 }
 
