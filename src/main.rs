@@ -6,6 +6,9 @@ extern crate piston_window;
 use fps_counter::*;
 use piston_window::*;
 use rand::Rng;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Instant;
 
 const WIDTH: usize = 160;
 const HEIGHT: usize = 160;
@@ -13,13 +16,15 @@ const SIZE: usize = 5;
 const WW: usize = WIDTH - 1;
 const HH: usize = HEIGHT - 1;
 
+const STARTING_FPS: u64 = 60;
+
 struct Settings {
     density: u64,
     fps: u64,
 }
 
 impl Settings {
-    const MAX_FPS: u64 = 60;
+    const MAX_FPS: u64 = 240;
     const MIN_FPS: u64 = 1;
     pub fn new(density: u64, fps: u64) -> Self {
         Settings { density, fps }
@@ -40,6 +45,18 @@ impl Settings {
     }
 }
 
+struct State {
+    x: usize,
+    y: usize,
+    is_alive: bool,
+}
+
+impl State {
+    pub fn new(x: usize, y: usize, is_alive: bool) -> Self {
+        State { x, y, is_alive }
+    }
+}
+
 fn main() {
     let help_text = [
         "\"Space\" to pause",
@@ -50,8 +67,7 @@ fn main() {
         "\"+\" to increase speed",
         "Click on a square to toggle it",
     ];
-    let mut settings: Settings = Settings::new(50, 20);
-
+    let mut settings: Settings = Settings::new(50, STARTING_FPS);
     let opengl = OpenGL::V3_2;
     let mut window: PistonWindow = WindowSettings::new("qr", [800; 2])
         .exit_on_esc(true)
@@ -134,6 +150,7 @@ fn main() {
         }
 
         window.draw_2d(&e, |c, g, device| {
+            let (tx, rx) = mpsc::channel();
             clear([0.0; 4], g);
             canvas.clone_from(&darkness);
 
@@ -171,20 +188,32 @@ fn main() {
             }
 
             for h in 0..HEIGHT {
-                for w in 0..WIDTH {
-                    if cells[h][w] {
-                        let x = w as u32 * SIZE as u32;
-                        let y = h as u32 * SIZE as u32;
-                        for cell_x in 1..SIZE - 1 {
-                            for cell_y in 1..SIZE - 1 {
-                                let xx = x + cell_x as u32 + 1;
-                                let yy = y + cell_y as u32 + 1;
-                                canvas.put_pixel(xx, yy, red);
-                            }
+                let tx1 = tx.clone();
+                thread::spawn(move || {
+                    for w in 0..WIDTH {
+                        let new_state = State::new(w, h, determine_next_state(cells, w, h));
+                        tx1.send(new_state).expect("Unable to send state");
+                    }
+                });
+            }
+
+            let mut received_count = 0;
+            for _received in rx {
+                received_count += 1;
+                if _received.is_alive {
+                    let x = _received.x as u32 * SIZE as u32;
+                    let y = _received.y as u32 * SIZE as u32;
+                    for cell_x in 1..SIZE - 1 {
+                        for cell_y in 1..SIZE - 1 {
+                            let xx = x + cell_x as u32 + 1;
+                            let yy = y + cell_y as u32 + 1;
+                            canvas.put_pixel(xx, yy, red);
                         }
                     }
-
-                    new_cells[h][w] = determine_next_state(cells, w, h);
+                }
+                new_cells[_received.y][_received.x] = _received.is_alive;
+                if received_count == WIDTH * HEIGHT {
+                    break;
                 }
             }
 
@@ -271,16 +300,11 @@ fn determine_next_state(cells: [[bool; WIDTH]; HEIGHT], w: usize, h: usize) -> b
         }
     }
 
-    let mut will_live = cells[h][w];
     if alive == 3 {
-        will_live = true;
+        return true;
     }
-    if alive > 3 {
-        will_live = false;
+    if alive > 3 || alive < 2 {
+        return false;
     }
-    if alive < 2 {
-        will_live = false;
-    }
-
-    will_live
+    cells[h][w]
 }
