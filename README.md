@@ -24,3 +24,4 @@ https://user-images.githubusercontent.com/2988301/127893810-a79c72cc-95df-474a-8
 
 ## Changelog
 * Increased performance using ImageBuffer instead of drawing a rectangle for each cell
+* Parallelism using rayon

@@ -110,8 +110,8 @@ fn main() {
                 let line_points = draw_path(last_coords[0], last_coords[1], cx, cy);
                 println!("{:?}", line_points);
                 for (xx, yy) in line_points {
-                    for x in xx - brush_size..xx + brush_size {
-                        for y in yy - brush_size..yy + brush_size {
+                    for x in xx ..xx + brush_size {
+                        for y in yy ..yy + brush_size {
                             if x < WIDTH as i32 && y < HEIGHT as i32 {
                                 cells[y as usize][x as usize] = true;
                                 new_cells = cells.clone();
