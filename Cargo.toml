@@ -12,6 +12,9 @@ rand = "0.8.0"
 rand_distr = "0.4.1"
 conrod_core = "0.74.0"
 fps_counter = "2.0.0"
+rayon = "1.10.0"
+gfx_device_gl = "0.16.1"
+pathfinding = "4.11.0"
 
 [profile.release]
 debug = true

@@ -3,12 +3,13 @@ extern crate fps_counter;
 extern crate image as im;
 extern crate piston_window;
 
-use fps_counter::*;
+use std::sync::{Arc, Mutex};
+
+use pathfinding::prelude::bfs;
 use piston_window::*;
+use piston_window::{G2dTexture, TextureContext};
 use rand::Rng;
-use std::sync::mpsc;
-use std::thread;
-use std::time::Instant;
+use rayon::prelude::*;
 
 const WIDTH: usize = 160;
 const HEIGHT: usize = 160;
@@ -23,6 +24,25 @@ struct Settings {
     fps: u64,
 }
 
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct Pos(i32, i32);
+
+impl Pos {
+    fn successors(&self) -> Vec<Pos> {
+        let &Pos(x, y) = self;
+        vec![
+            Pos(x + 1, y + 2),
+            Pos(x + 1, y - 2),
+            Pos(x - 1, y + 2),
+            Pos(x - 1, y - 2),
+            Pos(x + 2, y + 1),
+            Pos(x + 2, y - 1),
+            Pos(x - 2, y + 1),
+            Pos(x - 2, y - 1),
+        ]
+    }
+}
+
 impl Settings {
     const MAX_FPS: u64 = 240;
     const MIN_FPS: u64 = 1;
@@ -30,56 +50,20 @@ impl Settings {
         Settings { density, fps }
     }
     pub fn increase_fps(&mut self) {
-        self.fps = if self.fps >= Settings::MAX_FPS {
-            Settings::MAX_FPS
-        } else {
-            self.fps + 1
-        };
+        self.fps = self.fps.min(Settings::MAX_FPS).saturating_add(1);
     }
     pub fn decrease_fps(&mut self) {
-        self.fps = if self.fps <= Settings::MIN_FPS {
-            Settings::MIN_FPS
-        } else {
-            self.fps - 1
-        };
-    }
-}
-
-struct State {
-    x: usize,
-    y: usize,
-    is_alive: bool,
-}
-
-impl State {
-    pub fn new(x: usize, y: usize, is_alive: bool) -> Self {
-        State { x, y, is_alive }
+        self.fps = self.fps.max(Settings::MIN_FPS).saturating_sub(1);
     }
 }
 
 fn main() {
-    let help_text = [
-        "\"Space\" to pause",
-        "\"Esc\" or \"q\" to quit",
-        "\"r\" to reset",
-        "\"c\" to clear",
-        "\"-\" to reduce speed",
-        "\"+\" to increase speed",
-        "Click on a square to toggle it",
-    ];
-    let mut settings: Settings = Settings::new(50, STARTING_FPS);
+    let mut settings = Settings::new(50, STARTING_FPS);
     let opengl = OpenGL::V3_2;
-    let mut window: PistonWindow = WindowSettings::new("qr", [800; 2])
+    let mut window: PistonWindow = WindowSettings::new("Conway's Game of Life", [800; 2])
         .exit_on_esc(true)
         .graphics_api(opengl)
         .build()
-        .unwrap();
-
-    let assets = find_folder::Search::ParentsThenKids(3, 3)
-        .for_folder("assets")
-        .unwrap();
-    let mut glyphs = window
-        .load_font(assets.join("FiraSans-Regular.ttf"))
         .unwrap();
 
     let mut events = Events::new(EventSettings::new());
@@ -91,18 +75,19 @@ fn main() {
     let mut darkness =
         im::ImageBuffer::new(WIDTH as u32 * SIZE as u32, HEIGHT as u32 * SIZE as u32);
     darkness.fill(0);
+
     let mut paused = false;
-    let mut frame = 0;
-    let mut fps_counter = FPSCounter::default();
-    let mut show_text = true;
-    let mut is_mouse_down = false;
     let mut canvas = im::ImageBuffer::new(WIDTH as u32 * SIZE as u32, HEIGHT as u32 * SIZE as u32);
+
     let mut texture_context = TextureContext {
         factory: window.factory.clone(),
         encoder: window.factory.create_command_buffer().into(),
     };
+    let mut is_mouse_down = false;
     let mut texture: G2dTexture =
         Texture::from_image(&mut texture_context, &canvas, &TextureSettings::new()).unwrap();
+
+    let mut last_coords = [0, 0];
 
     while let Some(e) = events.next(&mut window) {
         if let Some(args) = e.button_args() {
@@ -116,11 +101,27 @@ fn main() {
         }
 
         if let Some(xy) = e.mouse_cursor_args() {
-            let cx = (xy[0] / SIZE as f64).floor();
-            let cy = (xy[1] / SIZE as f64).floor();
+            let brush_size = 1;
+            let cx = (xy[0] / SIZE as f64).floor() as i32;
+            let cy = (xy[1] / SIZE as f64).floor() as i32;
             println!("coords {}, {} | cell {}, {}", xy[0], xy[1], cx, cy);
-            if is_mouse_down && cx < WIDTH as f64 && cy < HEIGHT as f64 {
-                cells[cy as usize][cx as usize] = true;
+
+            if is_mouse_down {
+                let line_points = draw_path(last_coords[0], last_coords[1], cx, cy);
+                println!("{:?}", line_points);
+                for (xx, yy) in line_points {
+                    for x in xx - brush_size..xx + brush_size {
+                        for y in yy - brush_size..yy + brush_size {
+                            if x < WIDTH as i32 && y < HEIGHT as i32 {
+                                cells[y as usize][x as usize] = true;
+                                new_cells = cells.clone();
+                            }
+                        }
+                    }
+                }
+                last_coords = [cx, cy];
+            } else {
+                last_coords = [0, 0]
             }
         }
 
@@ -128,7 +129,6 @@ fn main() {
             if key == Key::R {
                 cells = generate_random(settings.density);
                 new_cells = cells.clone();
-                frame = 0;
             }
             if key == Key::Space {
                 paused = !paused;
@@ -138,6 +138,7 @@ fn main() {
             }
             if key == Key::C {
                 cells = [[false; WIDTH]; HEIGHT];
+                new_cells = cells.clone();
             }
             if key == Key::Plus || key == Key::Equals {
                 settings.increase_fps();
@@ -150,102 +151,75 @@ fn main() {
         }
 
         window.draw_2d(&e, |c, g, device| {
-            let (tx, rx) = mpsc::channel();
             clear([0.0; 4], g);
             canvas.clone_from(&darkness);
 
-            let frame_text_trans = c.transform.trans(5.0, 10.0);
-            let fps: usize = fps_counter.tick();
-            let fps_text = format!(
-                "target_fps {} | actual_fps {} | frame {}",
-                settings.fps, fps, frame
-            );
-            text::Text::new_color([0.8, 0.8, 0.8, 1.0], 10)
-                .draw(
-                    &fps_text.to_string(),
-                    &mut glyphs,
-                    &c.draw_state,
-                    frame_text_trans,
-                    g,
-                )
-                .unwrap();
-
-            if show_text == true {
-                let mut text_index = 1.0;
-                let starting_y = HH / 2;
-                for text in help_text.iter() {
-                    let transform = c
-                        .transform
-                        .trans((WW as f64) / 2.0, (20.0 * text_index) + starting_y as f64);
-                    text::Text::new_color([0.8, 0.8, 0.8, 1.0], 18)
-                        .draw(text, &mut glyphs, &c.draw_state, transform, g)
-                        .unwrap();
-                    text_index += 1.0;
-                }
-                if frame > 500 {
-                    show_text = false;
-                }
-            }
-
-            for h in 0..HEIGHT {
-                let tx1 = tx.clone();
-                thread::spawn(move || {
-                    for w in 0..WIDTH {
-                        let new_state = State::new(w, h, determine_next_state(cells, w, h));
-                        tx1.send(new_state).expect("Unable to send state");
+            if !paused {
+                let cells_arc = Arc::new(cells.clone());
+                new_cells.par_iter_mut().enumerate().for_each(|(h, row)| {
+                    let current_cells = cells_arc.clone();
+                    for (w, cell) in row.iter_mut().enumerate() {
+                        *cell = determine_next_state(&current_cells, w, h);
                     }
                 });
+            } else {
+                new_cells = cells.clone();
             }
 
-            let mut received_count = 0;
-            for _received in rx {
-                received_count += 1;
-                if _received.is_alive {
-                    let x = _received.x as u32 * SIZE as u32;
-                    let y = _received.y as u32 * SIZE as u32;
-                    for cell_x in 1..SIZE - 1 {
-                        for cell_y in 1..SIZE - 1 {
-                            let xx = x + cell_x as u32 + 1;
-                            let yy = y + cell_y as u32 + 1;
-                            canvas.put_pixel(xx, yy, red);
+            let canvas_arc = Arc::new(Mutex::new(canvas.clone()));
+            new_cells.par_iter().enumerate().for_each(|(h, row)| {
+                for (w, &is_alive) in row.iter().enumerate() {
+                    if is_alive {
+                        let x = w as u32 * SIZE as u32;
+                        let y = h as u32 * SIZE as u32;
+
+                        let mut canvas = canvas_arc.lock().unwrap();
+                        for cell_x in 1..SIZE - 1 {
+                            for cell_y in 1..SIZE - 1 {
+                                let xx = x + cell_x as u32 + 1;
+                                let yy = y + cell_y as u32 + 1;
+                                canvas.put_pixel(xx, yy, red);
+                            }
                         }
                     }
                 }
-                new_cells[_received.y][_received.x] = _received.is_alive;
-                if received_count == WIDTH * HEIGHT {
-                    break;
-                }
-            }
+            });
+            let canvas = Arc::try_unwrap(canvas_arc).unwrap().into_inner().unwrap();
 
             image(&texture, c.transform, g);
             texture.update(&mut texture_context, &canvas).unwrap();
             texture_context.encoder.flush(device);
-            glyphs.factory.encoder.flush(device);
         });
 
-        if !paused {
-            cells = new_cells.clone();
-            frame += 1;
-        }
+        cells = new_cells.clone();
     }
+}
+
+fn draw_path(x1: i32, y1: i32, x2: i32, y2: i32) -> Vec<(i32, i32)> {
+    if x1 == 0 && y1 == 0 {
+        return vec![(x2, y2)];
+    }
+    let target: Pos = Pos(x2, y2);
+    let result = bfs(&Pos(x1, y1), |p| p.successors(), |p| *p == target).expect("No!");
+    let mut points = Vec::new();
+    for point in result {
+        points.push((point.0, point.1));
+    }
+    return points;
 }
 
 fn generate_random(density: u64) -> [[bool; WIDTH]; HEIGHT] {
     let mut cells: [[bool; WIDTH]; HEIGHT] = [[true; WIDTH]; HEIGHT];
-    for i in 0..HEIGHT {
-        for j in 0..WIDTH {
-            let num = rand::thread_rng().gen_range(0..100);
-            if num <= density {
-                cells[i][j] = true
-            } else {
-                cells[i][j] = false
-            }
+    let mut rng = rand::thread_rng();
+    for row in cells.iter_mut() {
+        for cell in row.iter_mut() {
+            *cell = rng.gen_range(0..100) < density;
         }
     }
-    return cells;
+    cells
 }
 
-fn determine_next_state(cells: [[bool; WIDTH]; HEIGHT], w: usize, h: usize) -> bool {
+fn determine_next_state(cells: &[[bool; WIDTH]; HEIGHT], w: usize, h: usize) -> bool {
     let up = if h > 0 { cells[h - 1][w] } else { cells[HH][w] };
     let right = if w < WW { cells[h][w + 1] } else { cells[h][0] };
     let left = if w > 0 { cells[h][w - 1] } else { cells[h][WW] };
@@ -291,20 +265,12 @@ fn determine_next_state(cells: [[bool; WIDTH]; HEIGHT], w: usize, h: usize) -> b
         cells[0][0]
     };
 
-    let mut alive = 0;
-    for direction in &[
+    let alive = [
         up, right, left, down, up_left, up_right, down_left, down_right,
-    ] {
-        if direction == &true {
-            alive += 1;
-        }
-    }
+    ]
+    .iter()
+    .filter(|&&cell| cell)
+    .count();
 
-    if alive == 3 {
-        return true;
-    }
-    if alive > 3 || alive < 2 {
-        return false;
-    }
-    cells[h][w]
+    alive == 3 || (cells[h][w] && alive == 2)
 }
